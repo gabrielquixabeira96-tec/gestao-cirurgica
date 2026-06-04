@@ -10,37 +10,92 @@ export interface ResultadoLab {
   pdfUrl?: string;
 }
 
-export async function labLogin(usuario: string, senha: string, tipo = 'Convenio') {
-  const res = await fetch(`${LAB_API}/login`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ usuario, senha, tipo }),
-  });
-  return res.json() as Promise<{ ok: boolean; erro?: string }>;
-}
-
-export async function labBuscarPaciente(filtro: { nome?: string; cpf?: string }) {
+// Agora stateless: login + busca em uma única chamada
+export async function labBuscarPaciente(params: {
+  usuario: string;
+  senha: string;
+  tipo?: string;
+  nome?: string;
+  cpf?: string;
+}) {
   const res = await fetch(`${LAB_API}/buscar-paciente`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(filtro),
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      usuario: params.usuario,
+      senha: params.senha,
+      tipo: params.tipo || 'Convenio',
+      nome: params.nome,
+      cpf: params.cpf,
+    }),
   });
-  return res.json() as Promise<{ ok: boolean; pedidos: PedidoLab[]; erro?: string }>;
+  return res.json() as Promise<{
+    ok: boolean;
+    pedidos: PedidoLab[];
+    erro?: string;
+    debug?: Record<string, any>;
+  }>;
 }
 
-export async function labGetResultado(id: string) {
-  const res = await fetch(`${LAB_API}/resultado/${id}`);
+// Busca resultado de um pedido específico (stateless: faz login internamente)
+export async function labGetResultado(params: {
+  usuario: string;
+  senha: string;
+  pedidoId: string;
+  tipo?: string;
+}) {
+  const res = await fetch(`${LAB_API}/resultado`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      usuario: params.usuario,
+      senha: params.senha,
+      tipo: params.tipo || 'Convenio',
+      pedidoId: params.pedidoId,
+    }),
+  });
   return res.json() as Promise<ResultadoLab>;
 }
 
+// Função principal: busca + resultados dos últimos pedidos do paciente
 export async function buscarExamesPaciente(params: {
-  usuario: string; senha: string; nomePaciente?: string; cpfPaciente?: string;
+  usuario: string;
+  senha: string;
+  nomePaciente?: string;
+  cpfPaciente?: string;
 }) {
-  const login = await labLogin(params.usuario, params.senha);
-  if (!login.ok) return { ok: false, pedidos: [], resultados: [], erro: login.erro };
+  const busca = await labBuscarPaciente({
+    usuario: params.usuario,
+    senha: params.senha,
+    nome: params.nomePaciente,
+    cpf: params.cpfPaciente,
+  });
 
-  const busca = await labBuscarPaciente({ nome: params.nomePaciente, cpf: params.cpfPaciente });
-  if (!busca.ok || busca.pedidos.length === 0)
-    return { ok: true, pedidos: [], resultados: [], erro: 'Nenhum pedido encontrado' };
+  if (!busca.ok) {
+    return { ok: false, pedidos: [], resultados: [], erro: busca.erro || 'Erro ao buscar pedidos' };
+  }
 
-  const resultados = await Promise.all(busca.pedidos.slice(0, 5).map(p => labGetResultado(p.id)));
-  return { ok: true, pedidos: busca.pedidos, resultados: resultados.filter(r => r.ok) };
+  if (!busca.pedidos || busca.pedidos.length === 0) {
+    const debugMsg = busca.debug
+      ? ` (página: ${busca.debug.url}, tabelas: ${busca.debug.tabelasEncontradas})`
+      : '';
+    return { ok: true, pedidos: [], resultados: [], erro: `Nenhum pedido encontrado para este paciente.${debugMsg}` };
+  }
+
+  // Busca os resultados dos últimos 5 pedidos (em paralelo, cada um faz login próprio)
+  const resultados = await Promise.all(
+    busca.pedidos.slice(0, 5).map(p =>
+      labGetResultado({
+        usuario: params.usuario,
+        senha: params.senha,
+        pedidoId: p.id,
+      })
+    )
+  );
+
+  return {
+    ok: true,
+    pedidos: busca.pedidos,
+    resultados: resultados.filter(r => r.ok),
+  };
 }
