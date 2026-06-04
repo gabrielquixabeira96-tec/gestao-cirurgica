@@ -10,7 +10,7 @@ export interface ResultadoLab {
   pdfUrl?: string;
 }
 
-export async function labLogin(usuario: string, senha: string, tipo = 'Convênio') {
+export async function labLogin(usuario: string, senha: string, tipo = 'Convenio') {
   const res = await fetch(`${LAB_API}/login`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ usuario, senha, tipo }),
